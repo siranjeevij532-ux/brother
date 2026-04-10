@@ -1,3 +1,4 @@
+import os
 from django.contrib import admin
 from django.utils.html import format_html, mark_safe
 from django.utils import timezone
@@ -47,26 +48,36 @@ class CategoryAdmin(admin.ModelAdmin):
     fields = ['name', 'description', 'icon', 'image', 'order', 'is_active']
 
     def image_preview(self, obj):
-        if obj.image:
-            return format_html(
-                '<img src="{}" style="height:50px;width:80px;object-fit:cover;border-radius:8px"/>',
-                obj.image.url
-            )
+        if obj.image and getattr(obj.image, 'name', None):
+            try:
+                if os.path.exists(obj.image.path):
+                    return format_html(
+                        '<img src="{}" style="height:50px;width:80px;object-fit:cover;border-radius:8px"/>',
+                        obj.image.url
+                    )
+            except Exception:
+                pass
         return mark_safe('<span style="color:#aaa;font-size:11px">No Image</span>')
     image_preview.short_description = 'Image'
 
     def item_count(self, obj):
-        return obj.items.filter(is_available=True).count()
+        return obj.items.filter(is_available_dine_in=True).count()
     item_count.short_description = 'Active Items'
 
 
 @admin.register(MenuItem)
 class MenuItemAdmin(admin.ModelAdmin):
-    list_display = ['image_preview', 'name', 'category', 'price', 'parcel_charge', 'item_type', 'is_available', 'is_featured', 'order']
-    list_filter = ['category', 'item_type', 'is_available', 'is_featured']
-    list_editable = ['price', 'parcel_charge', 'is_available', 'is_featured', 'order']
+    list_display = ['image_preview', 'name', 'category', 'price', 'availability_status', 'parcel_charge', 'item_type', 'is_featured', 'order']
+    list_filter = ['category', 'item_type', 'is_available_dine_in', 'is_available_takeaway', 'is_featured']
+    list_editable = ['price', 'parcel_charge', 'is_featured', 'order']
     search_fields = ['name', 'description']
     ordering = ['category', 'order']
+    fieldsets = (
+        ('Basic Info', {'fields': ('category', 'name', 'description', 'price', 'item_type', 'image')}),
+        ('Availability', {'fields': ('is_available_dine_in', 'is_available_takeaway'), 
+                         'description': 'Check "Dine In Active" for dine-in orders or "Takeaway Active" for takeaway orders'}),
+        ('Display & Pricing', {'fields': ('is_featured', 'order', 'preparation_time', 'parcel_charge')}),
+    )
 
     def image_preview(self, obj):
         if obj.image:
@@ -76,6 +87,18 @@ class MenuItemAdmin(admin.ModelAdmin):
             )
         return mark_safe('<span style="color:#aaa">No Image</span>')
     image_preview.short_description = 'Image'
+
+    def availability_status(self, obj):
+        """Show which order types this item is available for"""
+        statuses = []
+        if obj.is_available_dine_in:
+            statuses.append('🍽️ Dine')
+        if obj.is_available_takeaway:
+            statuses.append('🎁 Away')
+        if not statuses:
+            return format_html('<span style="color:#e74c3c;font-weight:bold">Not Available</span>')
+        return format_html('<span style="color:#27ae60">{}</span>', ' | '.join(statuses))
+    availability_status.short_description = 'Available For'
 
 
 class OrderItemInline(admin.TabularInline):

@@ -30,9 +30,55 @@ from decimal import Decimal, ROUND_HALF_UP
 # CUSTOMER LOGIN & HISTORY
 # ═══════════════════════════════════════════════════════════════════
 
-def get_water_bottle():
+def get_water_bottle(order_type=None):
     """Return Water Bottle MenuItem for cart page quick-add."""
-    return MenuItem.objects.filter(name__icontains='water bottle', is_available=True).first()
+    qs = MenuItem.objects.filter(name__icontains='water bottle')
+    if order_type == 'takeaway':
+        qs = qs.filter(is_available_takeaway=True)
+    elif order_type == 'dine_in':
+        qs = qs.filter(is_available_dine_in=True)
+    bottle = qs.order_by('id').first()
+    if bottle:
+        return bottle
+
+    # Fallback to any water-related item if no exact water bottle is found.
+    qs = MenuItem.objects.filter(name__icontains='water')
+    if order_type == 'takeaway':
+        qs = qs.filter(is_available_takeaway=True)
+    elif order_type == 'dine_in':
+        qs = qs.filter(is_available_dine_in=True)
+    bottle = qs.order_by('id').first()
+    if bottle:
+        return bottle
+
+    # Fallback to any active beverage item.
+    qs = MenuItem.objects.filter(item_type='beverage')
+    if order_type == 'takeaway':
+        qs = qs.filter(is_available_takeaway=True)
+    elif order_type == 'dine_in':
+        qs = qs.filter(is_available_dine_in=True)
+    bottle = qs.order_by('id').first()
+    if bottle:
+        return bottle
+
+    # Create a default Water Bottle item if nothing exists yet.
+    category = Category.objects.filter(is_active=True).first()
+    if not category:
+        category = Category.objects.create(name='Beverages', icon='🥤', description='Drinks and refreshments', order=0, is_active=True)
+    bottle = MenuItem.objects.create(
+        category=category,
+        name='Water Bottle',
+        description='Pure drinking water',
+        price=10,
+        item_type='beverage',
+        is_available_dine_in=True,
+        is_available_takeaway=True,
+        is_featured=False,
+        preparation_time=1,
+        order=0,
+        parcel_charge=0,
+    )
+    return bottle
 
 
 def get_shop():
@@ -147,7 +193,8 @@ def customer_history(request):
     completed_count = sum(1 for o in all_orders if o.status == 'completed')
     from django.db.models import Sum
     total_spent = Order.objects.filter(
-        customer_phone=phone, status='completed', parent_order__isnull=True
+        customer_phone=phone,
+        status='completed',
     ).aggregate(t=Sum('total_amount'))['t'] or 0
 
     # Last table - prefer session value set when menu was loaded (for refresh support)
@@ -271,7 +318,7 @@ def menu_view(request, table_id):
     request.session['last_table_id'] = table_id
     request.session['last_order_type'] = 'dine_in'
 
-    wb = get_water_bottle()
+    wb = get_water_bottle(order_type='dine_in')
     return render(request, 'restaurant/menu.html', {
         'table': table, 'categories': categories,
         'discounts': discounts, 'shop': shop,
@@ -301,7 +348,7 @@ def takeaway_menu(request):
     combos = Combo.objects.filter(is_active=True).prefetch_related('combo_items__menu_item')
     request.session['last_table_id'] = None
     request.session['last_order_type'] = 'takeaway'
-    wb = get_water_bottle()
+    wb = get_water_bottle(order_type='takeaway')
     # Build parcel charges map for frontend: {item_id: parcel_charge}
     default_pc = shop.default_parcel_charge if shop else 0
     parcel_map = {}
@@ -387,11 +434,15 @@ def place_order(request):
                        if not item_data.get('combo_id') and item_data.get('id')]
         combo_ids   = [item_data['combo_id'] for item_data in items if item_data.get('combo_id')]
 
-        menu_items_map = {m.id: m for m in MenuItem.objects.filter(id__in=regular_ids, is_available=True)} if regular_ids else {}
+        # Filter items by availability based on order_type
+        if order_type == 'takeaway':
+            menu_items_map = {m.id: m for m in MenuItem.objects.filter(id__in=regular_ids, is_available_takeaway=True)} if regular_ids else {}
+            fallback_item  = MenuItem.objects.filter(is_available_takeaway=True).first() if combo_ids else None
+        else:  # dine_in
+            menu_items_map = {m.id: m for m in MenuItem.objects.filter(id__in=regular_ids, is_available_dine_in=True)} if regular_ids else {}
+            fallback_item  = MenuItem.objects.filter(is_available_dine_in=True).first() if combo_ids else None
+        
         combos_map     = {c.id: c for c in Combo.objects.filter(id__in=combo_ids, is_active=True).prefetch_related('combo_items__menu_item')} if combo_ids else {}
-
-        # Fallback item for combos with no sub-items
-        fallback_item  = MenuItem.objects.filter(is_available=True).first() if combo_ids else None
 
         order_items_to_create = []
         for item_data in items:
@@ -491,6 +542,7 @@ def add_items_to_order(request, order_id):
         order = get_object_or_404(Order, id=order_id)
         data = json.loads(request.body)
         items = data.get('items', [])
+        order_type = data.get('order_type', order.order_type)  # Use order's type if not specified
         if not items:
             return JsonResponse({'success': False, 'error': 'No items provided'})
         for item_data in items:
@@ -517,8 +569,13 @@ def add_items_to_order(request, order_id):
                             notes=f'[Combo: {combo.name}]'
                         )
                 continue
-            menu_item = MenuItem.objects.filter(id=item_data['id'], is_available=True).first()
+            menu_item = MenuItem.objects.filter(id=item_data['id']).first()
             if not menu_item:
+                continue
+            # Check availability based on order type
+            if order_type == 'takeaway' and not menu_item.is_available_takeaway:
+                continue
+            if order_type == 'dine_in' and not menu_item.is_available_dine_in:
                 continue
             qty = max(1, int(item_data.get('qty', 1)))
             existing = order.items.filter(menu_item=menu_item).first()
@@ -1279,12 +1336,7 @@ def export_daily_excel(request):
         orders = Order.objects.filter(created_at__date=today).select_related('table').prefetch_related('items__menu_item').order_by('-created_at')
         drafts = PosDraft.objects.filter(is_deleted=False, created_at__date=today).order_by('-created_at')
 
-        wb = Workbook()
-
-        # Sheet 1: Regular Orders
-        ws1 = wb.active
-        ws1.title = "Orders"
-        _fill_orders_sheet(ws1, orders)
+        wb = _build_excel(orders, 'Orders')
 
         # Sheet 2: POS Draft Orders
         ws2 = wb.create_sheet("POS Saved Orders")

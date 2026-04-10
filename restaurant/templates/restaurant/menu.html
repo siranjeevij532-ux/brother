@@ -261,7 +261,7 @@ header{background:linear-gradient(135deg,#1a1a2e,#0f3460);color:white;padding:13
     <div class="cat-grid" style="margin-bottom:20px">
       {% for combo in combos %}
       <div class="combo-card" onclick="openCombo({{ combo.id }})">
-        {% if combo.image %}<img src="{{ combo.image.url }}" class="combo-img">{% else %}<div class="combo-no-img">{{ combo.icon|default:"🎁" }}</div>{% endif %}
+        {% if combo.image %}<img src="{{ combo.image.url|escapejs }}" class="combo-img">{% else %}<div class="combo-no-img">{{ combo.icon|default:"🎁" }}</div>{% endif %}
         <div class="combo-badge">COMBO</div>
         <div class="combo-body">
           <div class="combo-name">{{ combo.name }}</div>
@@ -381,7 +381,7 @@ header{background:linear-gradient(135deg,#1a1a2e,#0f3460);color:white;padding:13
 
     <!-- Quick Add: Water Bottle -->
     <div class="cart-section-title">&#x1F4A7; Add Water Bottle</div>
-    <div style="background:white;border-radius:14px;padding:13px 16px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:flex;align-items:center;justify-content:space-between;">
+    <div id="wbSection" style="background:white;border-radius:14px;padding:13px 16px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:flex;align-items:center;justify-content:space-between;">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:26px">&#x1F4A7;</span>
         <div>
@@ -445,6 +445,11 @@ const WB_ID    = {{ water_bottle_id|default:'null' }};
 const WB_NAME  = '{{ water_bottle_name|default:"Water Bottle"|escapejs }}';
 const WB_PRICE = {{ water_bottle_price|default:10 }};
 
+if(!WB_ID){
+  var wbSection = document.getElementById('wbSection');
+  if(wbSection) wbSection.style.display = 'none';
+}
+
 // Store customer details for live order page
 try {
   if(CUST_NAME)  sessionStorage.setItem('bc_cust_name',  CUST_NAME);
@@ -456,10 +461,10 @@ try {
 const CATS = {
   {% for cat in categories %}{% if cat.items.count > 0 %}
   "{{ cat.id }}":{name:"{{ cat.name|escapejs }}",icon:"{{ cat.icon|default:'🍽️'|escapejs }}",items:[
-    {% for item in cat.items.all %}{% if item.is_available %}
+    {% for item in cat.items.all %}{% if is_takeaway and item.is_available_takeaway or not is_takeaway and item.is_available_dine_in %}
     {id:{{ item.id }},name:"{{ item.name|escapejs }}",desc:"{{ item.description|truncatechars:65|escapejs }}",
      price:{{ item.price }},type:"{{ item.item_type }}",feat:{% if item.is_featured %}true{% else %}false{% endif %},
-     prep:{{ item.preparation_time }},img:{% if item.image %}"{{ item.image.url }}"{% else %}null{% endif %}},
+     prep:{{ item.preparation_time }},img:{% if item.image %}"{{ item.image.url|escapejs }}"{% else %}null{% endif %}},
     {% endif %}{% endfor %}
   ]},
   {% endif %}{% endfor %}
@@ -637,14 +642,14 @@ var _pendingAdd = null;  // {id, name, price}
 var _cartLinkedToLive = {% if reorder_order %}true{% else %}false{% endif %};  // already in reorder mode
 
 function chg(id, delta, name, price){
-  // When adding a NEW item (not already in cart) and a live order exists → ask
+  // When adding a NEW item (not already in cart) and a live order exists → ask once, then auto-link all future items
   if(delta > 0 && name && _liveOrderActive && !_liveOrderComplete && !_cartLinkedToLive && !cart[id]){
     _pendingAdd = {id:id, name:name, price:price};
     document.getElementById('addMoreItemName').textContent = '"' + name + '"';
     // Show "same bill" modal
     document.getElementById('addMoreTitle').textContent = 'Add to Current Order?';
-    document.getElementById('addMoreSub').innerHTML = 'Your order is still active. Adding <strong>"'+name+'"</strong> will be added to the <strong>same bill</strong>.';
-    document.getElementById('addMoreYesBtn').textContent = '✓ Yes, Same Bill!';
+    document.getElementById('addMoreSub').innerHTML = 'Your order is still being prepared. Adding <strong>"'+name+'"</strong> will be added to your <strong>existing bill</strong>.<br><br>If you want a separate order, you can dismiss this and continue.';
+    document.getElementById('addMoreYesBtn').textContent = '✓ Add to Same Bill';
     document.getElementById('addMoreOverlay').classList.add('show');
     return;
   }
@@ -656,28 +661,52 @@ function _doChg(id, delta, name, price){
   if(!cart[id]) return;
   cart[id].qty += delta;
   if(cart[id].qty <= 0) delete cart[id];
-  saveCart(); updateCtrl(id); updateCartBar();
+  saveCart(); updateCtrl(id); updateCartBar(); updatePlaceOrderButton();
   if(delta > 0 && name) showToast(name+' added!','success');
 }
 
 function confirmAddMore(){
   document.getElementById('addMoreOverlay').classList.remove('show');
   if(_pendingAdd){
-    // Mark cart as linked to live order → next adds go straight in, order goes as reorder
+    // Mark cart as linked to live order → all future adds go to same bill
     _cartLinkedToLive = true;
     _doChg(_pendingAdd.id, 1, _pendingAdd.name, _pendingAdd.price);
     _pendingAdd = null;
-    // Update place-order button to reflect extra order
+    // Update place-order button to reflect adding to existing order
     var btn = document.getElementById('placeBtn');
     if(btn && !btn.dataset.orig) btn.dataset.orig = btn.innerHTML;
-    if(btn) btn.innerHTML = '&#x2795; Add to Current Order (Same Bill)';
+    if(btn) btn.innerHTML = '➕ Add to Order';
   }
 }
 
-function dismissAddMore(e){
-  if(e && e.target !== document.getElementById('addMoreOverlay')) return;
+function confirmAddMore(){
   document.getElementById('addMoreOverlay').classList.remove('show');
-  _pendingAdd = null;
+  if(_pendingAdd){
+    // Mark cart as linked to live order → all future adds go to same bill
+    _cartLinkedToLive = true;
+    _doChg(_pendingAdd.id, 1, _pendingAdd.name, _pendingAdd.price);
+    _pendingAdd = null;
+    // Update place-order button to reflect adding to existing order
+    updatePlaceOrderButton();
+  }
+}
+
+function updatePlaceOrderButton(){
+  var btn = document.getElementById('placeBtn');
+  if(!btn) return;
+
+  // Determine if this will add to existing order or create new order
+  var willAddToExisting = PARENT_ORDER || (_cartLinkedToLive && _liveOrderActive && !_liveOrderComplete);
+  var buttonText = willAddToExisting ? '➕ Add to Order' : '🍽️ Place Order';
+
+  if(btn.dataset.orig){
+    // Button has been modified, update it
+    btn.innerHTML = buttonText;
+  } else {
+    // Store original text and set new text
+    btn.dataset.orig = btn.innerHTML;
+    btn.innerHTML = buttonText;
+  }
 }
 
 function saveCart(){ try{ sessionStorage.setItem('bc_cart', JSON.stringify(cart)); }catch(e){} }
@@ -692,7 +721,10 @@ function cartQty(btn){
 }
 
 function addWaterBottle(){
-  if(!WB_ID) return;
+  if(!WB_ID){
+    showToast('Water bottle is not available yet','error');
+    return;
+  }
   var key = 'wb_'+WB_ID;
   if(cart[key]){ cart[key].qty += 1; }
   else { cart[key] = {name: WB_NAME, price: WB_PRICE, qty: 1}; }
@@ -719,7 +751,7 @@ function chgCart(key, delta){
   if(!cart[key]) return;
   cart[key].qty += delta;
   if(cart[key].qty <= 0) delete cart[key];
-  saveCart(); updateCartBar();
+  saveCart(); updateCartBar(); renderCartPage(); updateWbCtrl();
 }
 
 function updateCtrl(id){
@@ -755,13 +787,30 @@ function updateCartBar(){
   var hBtn  = document.getElementById('cartHeaderBtn');
   var cCount= document.getElementById('cartCount');
 
+  // Determine if this will be added to existing order or create new order
+  var willAddToExisting = _cartLinkedToLive && _liveOrderActive && !_liveOrderComplete;
+  var cartLabel = willAddToExisting ? 'Add to Order' : 'View Cart';
+  var itemText = count+' item'+(count!==1?'s':'') + (willAddToExisting ? ' (adds to existing)' : '');
+
   if(count > 0){
     // Show items-page View Cart bar only on step 2
-    if(step===2 && bar){ bar.classList.add('on'); document.getElementById('cbCount').textContent=count; document.getElementById('cbSub').textContent=count+' item'+(count!==1?'s':''); document.getElementById('cbTotal').textContent='\u20b9'+tot.toFixed(0); }
+    if(step===2 && bar){
+      bar.classList.add('on');
+      document.getElementById('cbCount').textContent=count;
+      document.getElementById('cbLabel').textContent=cartLabel;
+      document.getElementById('cbSub').textContent=itemText;
+      document.getElementById('cbTotal').textContent='\u20b9'+tot.toFixed(0);
+    }
     else if(bar){ bar.classList.remove('on'); }
 
     // Show categories-page View Cart bar only on step 1
-    if(step===1 && catsBar){ catsBar.classList.add('on'); document.getElementById('ccbCount').textContent=count; document.getElementById('ccbSub').textContent=count+' item'+(count!==1?'s':''); document.getElementById('ccbTotal').textContent='\u20b9'+tot.toFixed(0); }
+    if(step===1 && catsBar){
+      catsBar.classList.add('on');
+      document.getElementById('ccbCount').textContent=count;
+      document.getElementById('ccbLabel').textContent=cartLabel;
+      document.getElementById('ccbSub').textContent=itemText;
+      document.getElementById('ccbTotal').textContent='\u20b9'+tot.toFixed(0);
+    }
     else if(catsBar){ catsBar.classList.remove('on'); }
 
     // Header cart button on step 2
@@ -786,16 +835,26 @@ function renderCartPage(){
   var count = cartCount(), sub = cartSubtotal();
   var disc = sub*discPct/100, tot = sub-disc;
 
-  if(count === 0){
+  var rows = Object.entries(cart).map(function(e){
+    var k=e[0], item=e[1];
+    var isWaterBottle = k.startsWith('wb_');
+    return '<div class="cart-item-row">'      +'<span class="ci-name">'+item.name+(isWaterBottle?' &#x1F4A7;':'')+'</span>'      +'<div class="qty-ctrl">'      +'<button class="qty-btn" data-key="'+k+'" data-d="-1" onclick="cartQty(this)">&#x2212;</button>'      +'<span class="qty-val">'+item.qty+'</span>'      +'<button class="qty-btn" data-key="'+k+'" data-d="1" onclick="cartQty(this)">+</button>'      +'</div>'      +'<span class="ci-price">&#x20B9;'+(parseFloat(item.price)*item.qty).toFixed(0)+'</span>'      +'</div>';
+  }).join('');
+
+  if(WB_ID && !cart['wb_'+WB_ID]){
+    rows += '<div class="cart-item-row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">'
+      +'<span class="ci-name">'+WB_NAME+' &#x1F4A7;</span>'
+      +'<button class="add-btn" onclick="addWaterBottle()">+ Add</button>'
+      +'</div>';
+  }
+
+  if(!rows){
     box.innerHTML = '<div class="empty-cart-msg"><div class="ei">&#x1F6D2;</div>Cart is empty — go back and add items</div>';
     totBox.style.display = 'none';
     return;
   }
-  box.innerHTML = Object.entries(cart).map(function(e){
-    var k=e[0], item=e[1];
-    return '<div class="cart-item-row">'      +'<span class="ci-name">'+item.name+'</span>'      +'<div class="qty-ctrl">'      +'<button class="qty-btn" data-key="'+k+'" data-d="-1" onclick="cartQty(this)">&#x2212;</button>'      +'<span class="qty-val">'+item.qty+'</span>'      +'<button class="qty-btn" data-key="'+k+'" data-d="1" onclick="cartQty(this)">+</button>'      +'</div>'      +'<span class="ci-price">&#x20B9;'+(parseFloat(item.price)*item.qty).toFixed(0)+'</span>'      +'</div>';
-  }).join('');
 
+  box.innerHTML = rows;
   totBox.style.display = 'block';
   updateWbCtrl();
   var pt = parcelTotal();
@@ -837,7 +896,7 @@ async function placeOrder(btn){
     return {id: numId, qty: item.qty};
   }).filter(Boolean);
   btn.disabled=true;
-  btn.innerHTML='<span style="display:flex;align-items:center;justify-content:center;gap:8px"><span style="width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:white;border-radius:50%;display:inline-block;animation:spin .7s linear infinite"></span> Placing order...</span>';
+  btn.innerHTML='<span style="display:flex;align-items:center;justify-content:center;gap:8px"><span style="width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:white;border-radius:50%;display:inline-block;animation:spin .7s linear infinite"></span> ' + (effectiveParent ? 'Adding to Order...' : 'Placing Order...') + '</span>';
   try{
     // Decide if this is a reorder (same bill) or a new order
     // _cartLinkedToLive = customer confirmed "add to same bill"
@@ -849,10 +908,13 @@ async function placeOrder(btn){
       items:items, discount_percent:discPct, order_type:ORDER_TYPE,
     };
     if(effectiveParent) payload.parent_order_id = effectiveParent;
-    var resp = await fetch('/order/place/',{
+    
+    // Use different endpoint for reorders vs new orders
+    var url = effectiveParent ? `/order/${effectiveParent}/add-items/` : '/order/place/';
+    var resp = await fetch(url,{
       method:'POST',
       headers:{'Content-Type':'application/json','X-CSRFToken':getCookie('csrftoken')||''},
-      body:JSON.stringify(payload)
+      body:JSON.stringify(effectiveParent ? {items: items, order_type: ORDER_TYPE} : payload)
     });
     var data = await resp.json();
     if(data.success){
@@ -863,18 +925,24 @@ async function placeOrder(btn){
       // Show success overlay then redirect
       var ov = document.getElementById('orderSuccessOverlay');
       var on = document.getElementById('osOrderNum');
-      if(on) on.textContent = 'Order #' + (data.order_number || '');
+      if(effectiveParent){
+        // For reorders, show "Items added" message
+        if(on) on.textContent = 'Items added to Order #' + (data.order_number || '');
+      } else {
+        // For new orders, show order number
+        if(on) on.textContent = 'Order #' + (data.order_number || '');
+      }
       if(ov) ov.classList.add('show');
       setTimeout(function(){ window.location.href = '/customer/home/#live'; }, 800);
     } else {
       showToast('Error: '+(data.error||'Could not place order'),'error');
       btn.disabled=false;
-      btn.disabled=false; btn.textContent = effectiveParent ? '➕ Place Extra Order' : '🍽️ Place Order';
+      btn.textContent = effectiveParent ? '➕ Add to Order' : '🍽️ Place Order';
     }
   } catch(e){
     showToast('Connection error — try again','error');
     btn.disabled=false;
-    btn.disabled=false; btn.textContent = effectiveParent ? '➕ Place Extra Order' : '🍽️ Place Order';
+    btn.textContent = effectiveParent ? '➕ Add to Order' : '🍽️ Place Order';
   }
 }
 
@@ -882,6 +950,7 @@ function getCookie(n){ var v=document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)');
 
 // Init: restore cart display
 updateCartBar();
+updatePlaceOrderButton();
 
 // ── COMBO DETAIL ────────────────────────────────────────────────
 var _currentCombo = null;

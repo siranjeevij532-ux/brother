@@ -80,7 +80,9 @@ class MenuItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     image = models.ImageField(upload_to='menu_images/', blank=True, null=True)
     item_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='veg')
-    is_available = models.BooleanField(default=True)
+    is_available = models.BooleanField(default=True, help_text='(Deprecated: use Dine In Active / Takeaway Active below)')
+    is_available_dine_in = models.BooleanField(default=True, help_text='Item available for dine-in orders')
+    is_available_takeaway = models.BooleanField(default=True, help_text='Item available for takeaway orders')
     is_featured = models.BooleanField(default=False)
     preparation_time = models.PositiveIntegerField(default=15, help_text="Minutes")
     order = models.PositiveIntegerField(default=0)
@@ -92,6 +94,13 @@ class MenuItem(models.Model):
 
     def __str__(self):
         return f"{self.name} - ₹{self.price}"
+
+    def is_available_for_order_type(self, order_type):
+        """Check if item is available for the given order type ('dine_in' or 'takeaway')"""
+        if order_type == 'takeaway':
+            return self.is_available_takeaway
+        else:  # dine_in
+            return self.is_available_dine_in
 
 
 class Order(models.Model):

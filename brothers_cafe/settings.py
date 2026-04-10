@@ -88,7 +88,7 @@ USE_TZ = True
 # ── STATIC FILES (WhiteNoise) ─────────────────────────────────────────────────
 STATIC_URL = '/static/'
 STATICFILES_DIRS = []
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATIC_ROOT = os.path.join(str(BASE_DIR), 'staticfiles')
 
 STORAGES = {
     "default": {
@@ -101,7 +101,7 @@ STORAGES = {
 
 # ── MEDIA FILES ───────────────────────────────────────────────────────────────
 MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_ROOT = os.path.join(str(BASE_DIR), 'media')
 
 # ── CSRF ──────────────────────────────────────────────────────────────────────
 CSRF_TRUSTED_ORIGINS = [
